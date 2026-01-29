@@ -6,6 +6,7 @@ import Analytics from './components/Analytics';
 import { TimerMode, Session } from './types';
 import { analyzeStudySessions } from './services/geminiService';
 import { db } from './services/dbService';
+import { logSession, logSnapshot } from './services/logService';
 
 const MAX_BREAK = 3600;
 
@@ -22,11 +23,13 @@ const App: React.FC = () => {
   const [lastFlowDuration, setLastFlowDuration] = useState<number>(0);
   const [dbReady, setDbReady] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  
+
   const timerRef = useRef<number | null>(null);
-  const startTimeRef = useRef<number>(0); 
+  const logIntervalRef = useRef<number | null>(null);
+  const modeRef = useRef<TimerMode>(mode);
+  const startTimeRef = useRef<number>(0);
   const initialSecondsRef = useRef<number>(0);
-  
+
   // 防止初始化期間的副作用執行
   const isInitializing = useRef(true);
 
@@ -76,11 +79,14 @@ const App: React.FC = () => {
 
           if (savedMode === TimerMode.FLOW) {
             finalMode = TimerMode.FLOW;
-            finalSeconds = savedSeconds + elapsed;
+            // Fix: Do not add savedSeconds to elapsed. elapsed is calculated from savedStartTime which is the original start time.
+            finalSeconds = elapsed;
             startTimeRef.current = savedStartTime;
             startInterval(TimerMode.FLOW, savedStartTime, 0);
+            startLogInterval();
           } else if (savedMode === TimerMode.BREAK) {
-            const remaining = savedSeconds - elapsed;
+            // Fix: Calculate remaining time based on initial break duration minus elapsed time.
+            const remaining = savedInitialSeconds - elapsed;
             if (remaining > 0) {
               finalMode = TimerMode.BREAK;
               finalSeconds = remaining;
@@ -125,6 +131,10 @@ const App: React.FC = () => {
   useEffect(() => { saveState('insights', insights); }, [insights, saveState]);
   useEffect(() => { saveState('lastFlowDuration', lastFlowDuration); }, [lastFlowDuration, saveState]);
 
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
+
   // 同步當前計時進度
   useEffect(() => {
     if (!dbReady || isInitializing.current) return;
@@ -143,8 +153,8 @@ const App: React.FC = () => {
 
   // 此 Effect 僅處理「手動調整比例」時的動態更新，不再參與初始化
   useEffect(() => {
-    if (isInitializing.current || !dbReady) return; 
-    
+    if (isInitializing.current || !dbReady) return;
+
     if (mode === TimerMode.IDLE && seconds > 0 && lastFlowDuration > 0) {
       let suggestedBreak = Math.floor(lastFlowDuration * breakRatio);
       if (suggestedBreak > MAX_BREAK) suggestedBreak = MAX_BREAK;
@@ -159,12 +169,44 @@ const App: React.FC = () => {
     }
   }, []);
 
+  const stopLogInterval = useCallback(() => {
+    if (logIntervalRef.current) {
+      window.clearInterval(logIntervalRef.current);
+      logIntervalRef.current = null;
+    }
+  }, []);
+
+  const startLogInterval = useCallback(() => {
+    stopLogInterval();
+    logIntervalRef.current = window.setInterval(() => {
+      if (modeRef.current !== TimerMode.FLOW) return;
+      const snapshotEnd = Date.now();
+      const duration = Math.floor((snapshotEnd - startTimeRef.current) / 1000);
+      const snapshot: Session = {
+        id: `flow_${startTimeRef.current}_${snapshotEnd}`,
+        startTime: startTimeRef.current,
+        endTime: snapshotEnd,
+        duration,
+        type: 'FLOW',
+        date: new Date(snapshotEnd).toISOString()
+      };
+      logSnapshot(snapshot);
+    }, 5 * 60 * 1000);
+  }, [stopLogInterval]);
+
+  useEffect(() => {
+    return () => {
+      stopTimer();
+      stopLogInterval();
+    };
+  }, [stopTimer, stopLogInterval]);
+
   const startInterval = (targetMode: TimerMode, startTs: number, baseSeconds: number) => {
     stopTimer();
     timerRef.current = window.setInterval(() => {
       const now = Date.now();
       const diff = Math.floor((now - startTs) / 1000);
-      
+
       if (targetMode === TimerMode.FLOW) {
         setSeconds(diff);
       } else if (targetMode === TimerMode.BREAK) {
@@ -189,10 +231,12 @@ const App: React.FC = () => {
     setSeconds(0);
     setLastFlowDuration(0);
     startInterval(TimerMode.FLOW, now, 0);
+    startLogInterval();
   };
 
   const endFlow = async () => {
     stopTimer();
+    stopLogInterval();
     const duration = seconds;
     const newSession: Session = {
       id: Math.random().toString(36).substr(2, 9),
@@ -202,16 +246,17 @@ const App: React.FC = () => {
       type: 'FLOW',
       date: new Date().toISOString()
     };
-    
+
     setIsSaving(true);
     await db.saveSession(newSession);
+    logSession(newSession);
     const updatedSessions = await db.getAllSessions();
     setSessions(updatedSessions);
     setLastFlowDuration(duration);
-    
+
     let suggestedBreak = Math.floor(duration * breakRatio);
     if (suggestedBreak > MAX_BREAK) suggestedBreak = MAX_BREAK;
-    
+
     setSeconds(suggestedBreak);
     setMode(TimerMode.IDLE);
     // 結束專注時，activeTimer 應該轉為存儲建議休息時間，或者清空讓 initApp 重新計算
@@ -230,6 +275,7 @@ const App: React.FC = () => {
 
   const skipBreak = () => {
     stopTimer();
+    stopLogInterval();
     setMode(TimerMode.IDLE);
     setSeconds(0);
     setLastFlowDuration(0);
@@ -247,6 +293,7 @@ const App: React.FC = () => {
   const resetData = async () => {
     if (window.confirm("確定要刪除所有紀錄嗎？")) {
       stopTimer();
+      stopLogInterval();
       await db.clearAll();
       setSessions([]);
       setInsights(null);
@@ -257,11 +304,11 @@ const App: React.FC = () => {
   };
 
   const ratioOptions = [
-    { label: '1/3', value: 1/3 },
-    { label: '1/4', value: 1/4 },
-    { label: '1/5', value: 1/5 },
-    { label: '1/6', value: 1/6 },
-    { label: '1/7', value: 1/7 },
+    { label: '1/3', value: 1 / 3 },
+    { label: '1/4', value: 1 / 4 },
+    { label: '1/5', value: 1 / 5 },
+    { label: '1/6', value: 1 / 6 },
+    { label: '1/7', value: 1 / 7 },
   ];
 
   const getTimerLabel = () => {
@@ -304,7 +351,7 @@ const App: React.FC = () => {
               Flow Pomodoro
             </h1>
           </div>
-          
+
           <div className="flex items-center gap-2 bg-slate-800/50 px-3 py-1.5 rounded-full border border-slate-700">
             <div className={`w-2 h-2 rounded-full ${isSaving ? 'bg-amber-400 animate-pulse' : 'bg-emerald-500'}`}></div>
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
