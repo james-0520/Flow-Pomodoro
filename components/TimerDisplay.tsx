@@ -5,9 +5,10 @@ interface TimerDisplayProps {
   seconds: number;
   label: string;
   mode: 'FLOW' | 'BREAK' | 'IDLE';
+  isPaused?: boolean;
 }
 
-const TimerDisplay: React.FC<TimerDisplayProps> = ({ seconds, label, mode }) => {
+const TimerDisplay: React.FC<TimerDisplayProps> = ({ seconds, label, mode, isPaused = false }) => {
   const formatTime = (totalSeconds: number) => {
     const hrs = Math.floor(totalSeconds / 3600);
     const mins = Math.floor((totalSeconds % 3600) / 60);
@@ -30,7 +31,7 @@ const TimerDisplay: React.FC<TimerDisplayProps> = ({ seconds, label, mode }) => 
     <div className="flex flex-col items-center justify-center p-12 glass rounded-3xl w-full max-w-md mx-auto aspect-square relative overflow-hidden">
       {/* Background Pulse Animation */}
       {mode !== 'IDLE' && (
-        <div className={`absolute inset-0 opacity-10 animate-pulse ${mode === 'FLOW' ? 'bg-sky-500' : 'bg-emerald-500'}`} />
+        <div className={`absolute inset-0 opacity-10 ${!isPaused ? 'animate-pulse' : ''} ${mode === 'FLOW' ? 'bg-sky-500' : 'bg-emerald-500'}`} />
       )}
       
       <span className={`text-xs uppercase tracking-[0.2em] font-bold mb-4 ${getModeColor()}`}>
@@ -42,8 +43,8 @@ const TimerDisplay: React.FC<TimerDisplayProps> = ({ seconds, label, mode }) => 
       </div>
 
       <div className="mt-8 flex gap-2">
-        <div className={`w-2 h-2 rounded-full ${mode === 'FLOW' ? 'bg-sky-500 animate-ping' : 'bg-slate-700'}`} />
-        <div className={`w-2 h-2 rounded-full ${mode === 'BREAK' ? 'bg-emerald-500 animate-ping' : 'bg-slate-700'}`} />
+        <div className={`w-2 h-2 rounded-full ${mode === 'FLOW' ? `bg-sky-500 ${!isPaused ? 'animate-ping' : ''}` : 'bg-slate-700'}`} />
+        <div className={`w-2 h-2 rounded-full ${mode === 'BREAK' ? `bg-emerald-500 ${!isPaused ? 'animate-ping' : ''}` : 'bg-slate-700'}`} />
       </div>
     </div>
   );

@@ -23,6 +23,7 @@ const App: React.FC = () => {
   const [lastFlowDuration, setLastFlowDuration] = useState<number>(0);
   const [dbReady, setDbReady] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
 
   const timerRef = useRef<number | null>(null);
   const logIntervalRef = useRef<number | null>(null);
@@ -73,17 +74,28 @@ const App: React.FC = () => {
         // 2. 核心邏輯：決定最終要顯示什麼時間
         if (activeTimer) {
           // 優先級最高：恢復正在進行中的計時
-          const { savedMode, savedSeconds, savedStartTime, savedInitialSeconds } = activeTimer;
+          const { savedMode, savedSeconds, savedStartTime, savedInitialSeconds, savedIsPaused } = activeTimer;
           const now = Date.now();
           const elapsed = Math.floor((now - savedStartTime) / 1000);
 
-          if (savedMode === TimerMode.FLOW) {
+          if (savedIsPaused && (savedMode === TimerMode.FLOW || savedMode === TimerMode.BREAK)) {
+            finalMode = savedMode;
+            finalSeconds = savedSeconds;
+            initialSecondsRef.current = savedInitialSeconds || 0;
+            if (savedMode === TimerMode.FLOW) {
+              startTimeRef.current = Date.now() - savedSeconds * 1000;
+            } else {
+              startTimeRef.current = Date.now() - ((savedInitialSeconds || 0) - savedSeconds) * 1000;
+            }
+            setIsPaused(true);
+          } else if (savedMode === TimerMode.FLOW) {
             finalMode = TimerMode.FLOW;
             // Fix: Do not add savedSeconds to elapsed. elapsed is calculated from savedStartTime which is the original start time.
             finalSeconds = elapsed;
             startTimeRef.current = savedStartTime;
             startInterval(TimerMode.FLOW, savedStartTime, 0);
             startLogInterval();
+            setIsPaused(false);
           } else if (savedMode === TimerMode.BREAK) {
             // Fix: Calculate remaining time based on initial break duration minus elapsed time.
             const remaining = savedInitialSeconds - elapsed;
@@ -93,6 +105,7 @@ const App: React.FC = () => {
               startTimeRef.current = savedStartTime;
               initialSecondsRef.current = savedInitialSeconds;
               startInterval(TimerMode.BREAK, savedStartTime, savedInitialSeconds);
+              setIsPaused(false);
             }
           }
         } else if (savedLastDuration > 0) {
@@ -144,12 +157,13 @@ const App: React.FC = () => {
         savedMode: mode,
         savedSeconds: seconds,
         savedStartTime: startTimeRef.current,
-        savedInitialSeconds: initialSecondsRef.current
+        savedInitialSeconds: initialSecondsRef.current,
+        savedIsPaused: isPaused
       });
     } else if (mode === TimerMode.IDLE && seconds === 0) {
       db.setMetadata('activeTimer', null);
     }
-  }, [mode, seconds, dbReady, lastFlowDuration]);
+  }, [mode, seconds, dbReady, lastFlowDuration, isPaused]);
 
   // 此 Effect 僅處理「手動調整比例」時的動態更新，不再參與初始化
   useEffect(() => {
@@ -227,6 +241,7 @@ const App: React.FC = () => {
   const startFlow = () => {
     const now = Date.now();
     startTimeRef.current = now;
+    setIsPaused(false);
     setMode(TimerMode.FLOW);
     setSeconds(0);
     setLastFlowDuration(0);
@@ -237,6 +252,7 @@ const App: React.FC = () => {
   const endFlow = async () => {
     stopTimer();
     stopLogInterval();
+    setIsPaused(false);
     const duration = seconds;
     const newSession: Session = {
       id: Math.random().toString(36).substr(2, 9),
@@ -269,6 +285,7 @@ const App: React.FC = () => {
     const baseSeconds = seconds;
     startTimeRef.current = now;
     initialSecondsRef.current = baseSeconds;
+    setIsPaused(false);
     setMode(TimerMode.BREAK);
     startInterval(TimerMode.BREAK, now, baseSeconds);
   };
@@ -276,10 +293,32 @@ const App: React.FC = () => {
   const skipBreak = () => {
     stopTimer();
     stopLogInterval();
+    setIsPaused(false);
     setMode(TimerMode.IDLE);
     setSeconds(0);
     setLastFlowDuration(0);
     db.setMetadata('activeTimer', null);
+  };
+
+  const pauseTimer = () => {
+    if (mode === TimerMode.IDLE || isPaused) return;
+    stopTimer();
+    stopLogInterval();
+    setIsPaused(true);
+  };
+
+  const resumeTimer = () => {
+    if (mode === TimerMode.IDLE || !isPaused) return;
+    const now = Date.now();
+    if (mode === TimerMode.FLOW) {
+      startTimeRef.current = now - seconds * 1000;
+      startInterval(TimerMode.FLOW, startTimeRef.current, 0);
+      startLogInterval();
+    } else if (mode === TimerMode.BREAK) {
+      startTimeRef.current = now - (initialSecondsRef.current - seconds) * 1000;
+      startInterval(TimerMode.BREAK, startTimeRef.current, initialSecondsRef.current);
+    }
+    setIsPaused(false);
   };
 
   const triggerAnalysis = async (dataToAnalyze = sessions) => {
@@ -300,6 +339,7 @@ const App: React.FC = () => {
       setSeconds(0);
       setMode(TimerMode.IDLE);
       setLastFlowDuration(0);
+      setIsPaused(false);
     }
   };
 
@@ -312,12 +352,23 @@ const App: React.FC = () => {
   ];
 
   const getTimerLabel = () => {
-    if (mode === TimerMode.FLOW) return "深層專注中";
-    if (mode === TimerMode.BREAK) return "恢復休息中";
+    if (mode === TimerMode.FLOW) return isPaused ? "專注暫停" : "專注中";
+    if (mode === TimerMode.BREAK) return isPaused ? "休息暫停" : "休息中";
     if (mode === TimerMode.IDLE) {
-      return seconds > 0 ? "建議休息時間" : "準備好進入心流了嗎？";
+      return seconds > 0 ? "建議休息時間" : "準備好專注了嗎？";
     }
     return "Flow Pomodoro";
+  };
+
+  const formatDuration = (duration: number) => {
+    const hours = Math.floor(duration / 3600);
+    const minutes = Math.floor((duration % 3600) / 60);
+    const secs = duration % 60;
+
+    if (hours > 0) {
+      return `${hours}小時 ${minutes}分 ${secs}秒`;
+    }
+    return `${minutes}分 ${secs}秒`;
   };
 
   if (!dbReady) {
@@ -376,7 +427,7 @@ const App: React.FC = () => {
         {view === 'timer' ? (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
             <section className="lg:col-span-6 space-y-12">
-              <TimerDisplay seconds={seconds} label={getTimerLabel()} mode={mode} />
+              <TimerDisplay seconds={seconds} label={getTimerLabel()} mode={mode} isPaused={isPaused} />
 
               <div className="flex flex-col gap-4 max-w-md mx-auto">
                 {mode === TimerMode.IDLE && (
@@ -400,11 +451,21 @@ const App: React.FC = () => {
                     {seconds > 0 && (
                       <Button variant="primary" onClick={startBreak} className="w-full py-5 text-xl">開始休息</Button>
                     )}
-                    <Button variant="secondary" onClick={startFlow} className={`w-full ${seconds > 0 ? 'py-4' : 'py-5 text-xl'}`}>進入心流專注</Button>
+                    <Button variant="secondary" onClick={startFlow} className={`w-full ${seconds > 0 ? 'py-4' : 'py-5 text-xl'}`}>開始專注</Button>
                   </>
                 )}
-                {mode === TimerMode.FLOW && <Button variant="danger" onClick={endFlow} className="w-full py-5 text-xl">結束專注</Button>}
-                {mode === TimerMode.BREAK && <Button variant="ghost" onClick={skipBreak} className="w-full py-5 text-xl">跳過休息並結束</Button>}
+                {mode === TimerMode.FLOW && (
+                  <>
+                    <Button variant="secondary" onClick={isPaused ? resumeTimer : pauseTimer} className="w-full py-4">{isPaused ? '繼續專注' : '暫停專注'}</Button>
+                    <Button variant="danger" onClick={endFlow} className="w-full py-5 text-xl">結束專注</Button>
+                  </>
+                )}
+                {mode === TimerMode.BREAK && (
+                  <>
+                    <Button variant="secondary" onClick={isPaused ? resumeTimer : pauseTimer} className="w-full py-4">{isPaused ? '繼續休息' : '暫停休息'}</Button>
+                    <Button variant="ghost" onClick={skipBreak} className="w-full py-5 text-xl">跳過休息</Button>
+                  </>
+                )}
               </div>
             </section>
 
@@ -421,7 +482,7 @@ const App: React.FC = () => {
                       <p className="text-xs text-slate-400">{new Date(s.startTime).toLocaleDateString()} {new Date(s.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
                     </div>
                     <div className="text-right">
-                      <p className="font-mono text-slate-100">{Math.floor(s.duration / 60)}分 {s.duration % 60}秒</p>
+                      <p className="font-mono text-slate-100">{formatDuration(s.duration)}</p>
                     </div>
                   </div>
                 )) : <div className="text-center p-12 glass border-dashed border-2 border-slate-800 rounded-2xl text-slate-500">資料庫目前為空。</div>}
