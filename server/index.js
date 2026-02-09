@@ -1,10 +1,11 @@
 import http from "http";
-import { mkdir, appendFile } from "fs/promises";
+import { mkdir, appendFile, readFile } from "fs/promises";
 import path from "path";
 
 const PORT = Number(process.env.FLOW_LOG_PORT || 5174);
 const LOG_DIR = process.env.FLOW_LOG_DIR || path.join(process.cwd(), "data", "logs");
-const LOG_FILE = path.join(LOG_DIR, "flow.log");
+const SESSION_LOG_FILE = path.join(LOG_DIR, "flow.log");
+const SNAPSHOT_LOG_FILE = path.join(LOG_DIR, "flow.snapshots.log");
 const ALLOWED_ORIGIN = process.env.FLOW_LOG_ORIGIN || "http://localhost:3000";
 
 const sendJson = (res, status, payload) => {
@@ -15,19 +16,54 @@ const sendJson = (res, status, payload) => {
 
 const setCors = (res) => {
   res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 };
+
+const isValidTimeValue = (value) => {
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value !== "string") return false;
+  return !Number.isNaN(Date.parse(value));
+};
+
+const normalizeTime = (value) => {
+  const timestamp = typeof value === "number" ? value : Date.parse(value);
+  return formatLocalIso(new Date(timestamp));
+};
+
+const formatLocalIso = (date) => {
+  const pad = (value, size = 2) => String(value).padStart(size, "0");
+  const year = date.getFullYear();
+  const month = pad(date.getMonth() + 1);
+  const day = pad(date.getDate());
+  const hours = pad(date.getHours());
+  const minutes = pad(date.getMinutes());
+  const seconds = pad(date.getSeconds());
+  const millis = pad(date.getMilliseconds(), 3);
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absOffset = Math.abs(offsetMinutes);
+  const offsetHours = pad(Math.floor(absOffset / 60));
+  const offsetMins = pad(absOffset % 60);
+  return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${millis}${sign}${offsetHours}:${offsetMins}`;
+};
+
+const normalizeSession = (data) => ({
+  id: data.id,
+  startTime: normalizeTime(data.startTime),
+  endTime: normalizeTime(data.endTime),
+  duration: data.duration,
+  type: data.type,
+});
 
 const isValidSession = (data) => {
   if (!data || typeof data !== "object") return false;
   return (
     typeof data.id === "string" &&
-    typeof data.startTime === "number" &&
-    typeof data.endTime === "number" &&
+    isValidTimeValue(data.startTime) &&
+    isValidTimeValue(data.endTime) &&
     typeof data.duration === "number" &&
-    (data.type === "FLOW" || data.type === "BREAK") &&
-    typeof data.date === "string"
+    (data.type === "FLOW" || data.type === "BREAK")
   );
 };
 
@@ -42,7 +78,33 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const pathname = url.pathname;
 
-  if (req.method !== "POST" || !pathname.startsWith("/api/log/")) {
+  if (!pathname.startsWith("/api/log/")) {
+    return sendJson(res, 404, { ok: false, error: "Not found" });
+  }
+
+  if (req.method === "GET" && pathname === "/api/log/sessions") {
+    try {
+      const rawLog = await readFile(SESSION_LOG_FILE, "utf8").catch(() => "");
+      const sessions = rawLog
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => {
+          try {
+            return JSON.parse(line);
+          } catch (err) {
+            return null;
+          }
+        })
+        .filter((entry) => entry && isValidSession(entry));
+      return sendJson(res, 200, { ok: true, sessions });
+    } catch (err) {
+      console.error("Log read error:", err);
+      return sendJson(res, 500, { ok: false, error: "Log read failed" });
+    }
+  }
+
+  if (req.method !== "POST") {
     return sendJson(res, 404, { ok: false, error: "Not found" });
   }
 
@@ -66,7 +128,9 @@ const server = http.createServer(async (req, res) => {
 
     try {
       await mkdir(LOG_DIR, { recursive: true });
-      await appendFile(LOG_FILE, `${JSON.stringify(payload)}\n`, "utf8");
+      const normalized = normalizeSession(payload);
+      const targetFile = pathname === "/api/log/snapshot" ? SNAPSHOT_LOG_FILE : SESSION_LOG_FILE;
+      await appendFile(targetFile, `${JSON.stringify(normalized)}\n`, "utf8");
       return sendJson(res, 200, { ok: true });
     } catch (err) {
       console.error("Log write error:", err);
@@ -77,5 +141,6 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Flow log server listening on http://localhost:${PORT}`);
-  console.log(`Writing logs to ${LOG_FILE}`);
+  console.log(`Writing session logs to ${SESSION_LOG_FILE}`);
+  console.log(`Writing snapshot logs to ${SNAPSHOT_LOG_FILE}`);
 });

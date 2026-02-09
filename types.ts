@@ -5,13 +5,14 @@ export enum TimerMode {
   IDLE = 'IDLE'
 }
 
+export type SessionTime = string | number;
+
 export interface Session {
   id: string;
-  startTime: number;
-  endTime: number;
+  startTime: SessionTime;
+  endTime: SessionTime;
   duration: number; // in seconds
   type: 'FLOW' | 'BREAK';
-  date: string;
 }
 
 export interface ProductivityInsight {

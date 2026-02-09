@@ -1,13 +1,15 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
 import { Session } from "../types";
+import { toReadableTime } from "../utils/sessionTime";
 
 export const analyzeStudySessions = async (sessions: Session[]): Promise<any> => {
   // Always use a named parameter and direct process.env.API_KEY reference
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
   const sessionsSummary = sessions.map(s => ({
-    date: s.date,
+    startTime: toReadableTime(s.startTime),
+    endTime: toReadableTime(s.endTime),
     duration: s.duration,
     type: s.type
   }));

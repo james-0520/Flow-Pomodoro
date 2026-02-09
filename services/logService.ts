@@ -14,6 +14,18 @@ async function postSession(kind: "session" | "snapshot", session: Session): Prom
   }
 }
 
+export async function fetchLogSessions(): Promise<Session[] | null> {
+  try {
+    const response = await fetch(`${API_BASE}/sessions`);
+    if (!response.ok) return null;
+    const payload = await response.json();
+    return Array.isArray(payload.sessions) ? payload.sessions : [];
+  } catch (err) {
+    console.warn("Log read failed:", err);
+    return null;
+  }
+}
+
 export function logSession(session: Session): Promise<void> {
   return postSession("session", session);
 }

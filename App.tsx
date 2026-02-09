@@ -4,9 +4,10 @@ import TimerDisplay from './components/TimerDisplay';
 import Button from './components/Button';
 import Analytics from './components/Analytics';
 import { TimerMode, Session } from './types';
+import { toDate, toTimestamp } from './utils/sessionTime';
 import { analyzeStudySessions } from './services/geminiService';
 import { db } from './services/dbService';
-import { logSession, logSnapshot } from './services/logService';
+import { fetchLogSessions, logSession, logSnapshot } from './services/logService';
 
 const MAX_BREAK = 3600;
 
@@ -52,13 +53,40 @@ const App: React.FC = () => {
         }
 
         // 批次讀取所有持久化狀態
-        const [allSessions, savedInsights, savedRatio, savedLastDuration, activeTimer] = await Promise.all([
+        const [dbSessions, logSessions, savedInsights, savedRatio, savedLastDuration, activeTimer] = await Promise.all([
           db.getAllSessions(),
+          fetchLogSessions(),
           db.getMetadata<any>('insights'),
           db.getMetadata<number>('breakRatio'),
           db.getMetadata<number>('lastFlowDuration'),
           db.getMetadata<any>('activeTimer')
         ]);
+
+        let allSessions = dbSessions;
+        if (logSessions) {
+          const dbIds = new Set(dbSessions.map((s) => s.id));
+          const logIds = new Set(logSessions.map((s) => s.id));
+
+          const missingInDb = logSessions
+            .filter((s) => !dbIds.has(s.id))
+            .map((s) => ({
+              ...s,
+              startTime: toTimestamp(s.startTime),
+              endTime: toTimestamp(s.endTime)
+            }));
+
+          if (missingInDb.length > 0) {
+            for (const session of missingInDb) {
+              await db.saveSession(session);
+            }
+            allSessions = await db.getAllSessions();
+          }
+
+          const missingInLog = dbSessions.filter((s) => !logIds.has(s.id));
+          if (missingInLog.length > 0) {
+            await Promise.all(missingInLog.map((session) => logSession(session)));
+          }
+        }
 
         // 建立臨時變數來存放計算結果，避免多次渲染產生的閃爍
         let finalMode = TimerMode.IDLE;
@@ -201,8 +229,7 @@ const App: React.FC = () => {
         startTime: startTimeRef.current,
         endTime: snapshotEnd,
         duration,
-        type: 'FLOW',
-        date: new Date(snapshotEnd).toISOString()
+        type: 'FLOW'
       };
       logSnapshot(snapshot);
     }, 5 * 60 * 1000);
@@ -259,8 +286,7 @@ const App: React.FC = () => {
       startTime: startTimeRef.current,
       endTime: Date.now(),
       duration,
-      type: 'FLOW',
-      date: new Date().toISOString()
+      type: 'FLOW'
     };
 
     setIsSaving(true);
@@ -479,7 +505,7 @@ const App: React.FC = () => {
                   <div key={s.id} className="glass p-4 rounded-xl flex items-center justify-between border-l-4 border-slate-700 hover:border-sky-400 transition-colors">
                     <div>
                       <p className="text-slate-200 font-medium">{s.type === 'FLOW' ? '深度專注' : '恢復休息'}</p>
-                      <p className="text-xs text-slate-400">{new Date(s.startTime).toLocaleDateString()} {new Date(s.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                      <p className="text-xs text-slate-400">{toDate(s.startTime).toLocaleDateString()} {toDate(s.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
                     </div>
                     <div className="text-right">
                       <p className="font-mono text-slate-100">{formatDuration(s.duration)}</p>

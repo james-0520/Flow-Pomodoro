@@ -5,6 +5,7 @@ import {
   PieChart, Pie, Legend
 } from 'recharts';
 import { Session } from '../types';
+import { toDate } from '../utils/sessionTime';
 
 interface AnalyticsProps {
   sessions: Session[];
@@ -16,7 +17,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ sessions, insights }) => {
     const groups: Record<string, number> = {};
     sessions.forEach(s => {
       if (s.type === 'FLOW') {
-        const date = new Date(s.startTime).toLocaleDateString();
+        const date = toDate(s.startTime).toLocaleDateString();
         groups[date] = (groups[date] || 0) + s.duration;
       }
     });
