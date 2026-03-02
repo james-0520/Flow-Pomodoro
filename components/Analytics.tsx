@@ -1,15 +1,14 @@
-
 import React from 'react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
   PieChart, Pie, Legend
 } from 'recharts';
-import { Session } from '../types';
+import { ProductivityInsight, Session } from '../types';
 import { toDate } from '../utils/sessionTime';
 
 interface AnalyticsProps {
   sessions: Session[];
-  insights: any;
+  insights: ProductivityInsight | null;
 }
 
 const Analytics: React.FC<AnalyticsProps> = ({ sessions, insights }) => {

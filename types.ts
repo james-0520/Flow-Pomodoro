@@ -1,4 +1,3 @@
-
 export enum TimerMode {
   FLOW = 'FLOW', // Positive counting
   BREAK = 'BREAK', // Countdown
@@ -19,4 +18,5 @@ export interface ProductivityInsight {
   summary: string;
   recommendation: string;
   focusScore: number;
+  bestTimeOfDay: string;
 }

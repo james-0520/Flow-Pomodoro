@@ -1,13 +1,13 @@
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import TimerDisplay from './components/TimerDisplay';
 import Button from './components/Button';
 import Analytics from './components/Analytics';
-import { TimerMode, Session } from './types';
+import { TimerMode, Session, ProductivityInsight } from './types';
 import { toDate, toTimestamp } from './utils/sessionTime';
-import { analyzeStudySessions } from './services/geminiService';
+import { analyzeStudySessions, DEFAULT_GEMINI_MODEL, GeminiAnalysisError } from './services/geminiService';
 import { db } from './services/dbService';
 import { fetchLogSessions, logSession, logSnapshot } from './services/logService';
+import hintSoundUrl from './hint.mp3';
 
 const MAX_BREAK = 3600;
 
@@ -18,9 +18,13 @@ const App: React.FC = () => {
   const [mode, setMode] = useState<TimerMode>(TimerMode.IDLE);
   const [seconds, setSeconds] = useState(0);
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [insights, setInsights] = useState<any>(null);
+  const [insights, setInsights] = useState<ProductivityInsight | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [geminiApiKey, setGeminiApiKey] = useState('');
+  const [geminiModel, setGeminiModel] = useState(DEFAULT_GEMINI_MODEL);
   const [breakRatio, setBreakRatio] = useState(0.2);
+  const [hintVolume, setHintVolume] = useState(1);
   const [lastFlowDuration, setLastFlowDuration] = useState<number>(0);
   const [dbReady, setDbReady] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -31,9 +35,46 @@ const App: React.FC = () => {
   const modeRef = useRef<TimerMode>(mode);
   const startTimeRef = useRef<number>(0);
   const initialSecondsRef = useRef<number>(0);
+  const focus25NotifiedRef = useRef(false);
+  const breakEndNotifiedRef = useRef(false);
 
   // 防止初始化期間的副作用執行
   const isInitializing = useRef(true);
+
+  const playHintSound = () => {
+    try {
+      const audio = new Audio(hintSoundUrl);
+      audio.volume = Math.min(1, Math.max(0, hintVolume));
+      audio.play().catch(() => { });
+    } catch {
+      // Ignore audio errors (autoplay restrictions or unsupported format).
+    }
+  };
+
+  const showDesktopNotification = async (title: string, body: string) => {
+    if (!('Notification' in window)) return;
+    if (Notification.permission === 'granted') {
+      new Notification(title, { body });
+      return;
+    }
+    if (Notification.permission === 'denied') return;
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission === 'granted') new Notification(title, { body });
+    } catch {
+      // Ignore permission errors.
+    }
+  };
+
+  const triggerFocusCompleteAlert = () => {
+    playHintSound();
+    void showDesktopNotification('專注 25 分鐘', '如果累了不妨休息一下。');
+  };
+
+  const triggerBreakEndAlert = () => {
+    playHintSound();
+    void showDesktopNotification('休息時間結束', '該準備下一段專注了。');
+  };
 
   useEffect(() => {
     const initApp = async () => {
@@ -53,13 +94,26 @@ const App: React.FC = () => {
         }
 
         // 批次讀取所有持久化狀態
-        const [dbSessions, logSessions, savedInsights, savedRatio, savedLastDuration, activeTimer] = await Promise.all([
+        const [
+          dbSessions,
+          logSessions,
+          savedInsights,
+          savedRatio,
+          savedLastDuration,
+          savedVolume,
+          activeTimer,
+          savedGeminiApiKey,
+          savedGeminiModel
+        ] = await Promise.all([
           db.getAllSessions(),
           fetchLogSessions(),
-          db.getMetadata<any>('insights'),
+          db.getMetadata<ProductivityInsight>('insights'),
           db.getMetadata<number>('breakRatio'),
           db.getMetadata<number>('lastFlowDuration'),
-          db.getMetadata<any>('activeTimer')
+          db.getMetadata<number>('hintVolume'),
+          db.getMetadata<any>('activeTimer'),
+          db.getMetadata<string>('geminiApiKey'),
+          db.getMetadata<string>('geminiModel')
         ]);
 
         let allSessions = dbSessions;
@@ -98,6 +152,9 @@ const App: React.FC = () => {
         if (savedInsights) setInsights(savedInsights);
         if (savedRatio) setBreakRatio(currentRatio);
         if (savedLastDuration) setLastFlowDuration(savedLastDuration);
+        if (typeof savedVolume === 'number') setHintVolume(savedVolume);
+        if (savedGeminiApiKey) setGeminiApiKey(savedGeminiApiKey);
+        if (savedGeminiModel) setGeminiModel(savedGeminiModel);
 
         // 2. 核心邏輯：決定最終要顯示什麼時間
         if (activeTimer) {
@@ -169,8 +226,11 @@ const App: React.FC = () => {
   }, [dbReady]);
 
   useEffect(() => { saveState('breakRatio', breakRatio); }, [breakRatio, saveState]);
+  useEffect(() => { saveState('hintVolume', hintVolume); }, [hintVolume, saveState]);
   useEffect(() => { saveState('insights', insights); }, [insights, saveState]);
   useEffect(() => { saveState('lastFlowDuration', lastFlowDuration); }, [lastFlowDuration, saveState]);
+  useEffect(() => { saveState('geminiApiKey', geminiApiKey); }, [geminiApiKey, saveState]);
+  useEffect(() => { saveState('geminiModel', geminiModel); }, [geminiModel, saveState]);
 
   useEffect(() => {
     modeRef.current = mode;
@@ -250,9 +310,17 @@ const App: React.FC = () => {
 
       if (targetMode === TimerMode.FLOW) {
         setSeconds(diff);
+        if (diff >= 25 * 60 && !focus25NotifiedRef.current) {
+          focus25NotifiedRef.current = true;
+          triggerFocusCompleteAlert();
+        }
       } else if (targetMode === TimerMode.BREAK) {
         const remaining = baseSeconds - diff;
         if (remaining <= 0) {
+          if (!breakEndNotifiedRef.current) {
+            breakEndNotifiedRef.current = true;
+            triggerBreakEndAlert();
+          }
           stopTimer();
           setMode(TimerMode.IDLE);
           setSeconds(0);
@@ -267,6 +335,7 @@ const App: React.FC = () => {
 
   const startFlow = () => {
     const now = Date.now();
+    focus25NotifiedRef.current = false;
     startTimeRef.current = now;
     setIsPaused(false);
     setMode(TimerMode.FLOW);
@@ -309,6 +378,7 @@ const App: React.FC = () => {
   const startBreak = () => {
     const now = Date.now();
     const baseSeconds = seconds;
+    breakEndNotifiedRef.current = false;
     startTimeRef.current = now;
     initialSecondsRef.current = baseSeconds;
     setIsPaused(false);
@@ -349,10 +419,30 @@ const App: React.FC = () => {
 
   const triggerAnalysis = async (dataToAnalyze = sessions) => {
     if (isAnalyzing || dataToAnalyze.length === 0) return;
+    setAnalysisError(null);
     setIsAnalyzing(true);
-    const result = await analyzeStudySessions(dataToAnalyze);
-    if (result) setInsights(result);
-    setIsAnalyzing(false);
+
+    try {
+      const result = await analyzeStudySessions(dataToAnalyze, {
+        apiKey: geminiApiKey,
+        model: geminiModel
+      });
+      setInsights(result);
+    } catch (error) {
+      if (error instanceof GeminiAnalysisError) {
+        setAnalysisError(error.message);
+        console.error('Gemini Analysis Error:', {
+          message: error.message,
+          status: error.status,
+          detail: error.detail
+        });
+      } else {
+        setAnalysisError('AI 分析失敗，請稍後再試');
+        console.error('Gemini Analysis Error:', error);
+      }
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   const resetData = async () => {
@@ -362,6 +452,9 @@ const App: React.FC = () => {
       await db.clearAll();
       setSessions([]);
       setInsights(null);
+      setAnalysisError(null);
+      setGeminiApiKey('');
+      setGeminiModel(DEFAULT_GEMINI_MODEL);
       setSeconds(0);
       setMode(TimerMode.IDLE);
       setLastFlowDuration(0);
@@ -474,6 +567,34 @@ const App: React.FC = () => {
                       </div>
                     </div>
 
+                    <div className="glass p-4 rounded-2xl border-sky-500/20 mb-2">
+                      <div className="flex items-center justify-between mb-3 px-1">
+                        <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">提示音音量</span>
+                        <span className="text-xs font-mono text-sky-400">{Math.round(hintVolume * 100)}%</span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={hintVolume}
+                          onChange={(e) => setHintVolume(Number(e.target.value))}
+                          className="flex-1 accent-sky-500"
+                        />
+                        <Button
+                          variant="secondary"
+                          onClick={playHintSound}
+                          className="px-3 py-2"
+                          title="測試提示音"
+                        >
+                          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M7 5v14l12-7-12-7z" />
+                          </svg>
+                        </Button>
+                      </div>
+                    </div>
+
                     {seconds > 0 && (
                       <Button variant="primary" onClick={startBreak} className="w-full py-5 text-xl">開始休息</Button>
                     )}
@@ -517,12 +638,51 @@ const App: React.FC = () => {
           </div>
         ) : (
           <div className="space-y-12 animate-in fade-in slide-in-from-bottom-4 duration-500">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-4xl font-bold text-slate-100">AI 生產力分析</h2>
-                <p className="text-slate-400 mt-2">深入了解您的專注模式與心流指標。</p>
+            <div className="space-y-6">
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                <div>
+                  <h2 className="text-4xl font-bold text-slate-100">AI 生產力分析</h2>
+                  <p className="text-slate-400 mt-2">深入了解您的專注模式與心流指標。</p>
+                </div>
+                <Button variant="primary" onClick={() => triggerAnalysis()} disabled={isAnalyzing || sessions.length === 0} className="px-8">
+                  {isAnalyzing ? "分析中..." : "重新整理 AI 分析"}
+                </Button>
               </div>
-              <Button variant="primary" onClick={() => triggerAnalysis()} disabled={isAnalyzing || sessions.length === 0} className="px-8">{isAnalyzing ? "分析中..." : "重新整理 AI 分析"}</Button>
+
+              <div className="glass rounded-2xl p-5 border border-slate-700/80 space-y-4">
+                <p className="text-xs font-bold uppercase tracking-widest text-slate-400">Gemini 設定</p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <label className="space-y-2">
+                    <span className="block text-sm text-slate-300">API Key</span>
+                    <input
+                      type="password"
+                      value={geminiApiKey}
+                      onChange={(e) => setGeminiApiKey(e.target.value)}
+                      placeholder="貼上 Gemini API key"
+                      autoComplete="off"
+                      className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-3 py-2.5 text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/60 focus:border-sky-500"
+                    />
+                  </label>
+                  <label className="space-y-2">
+                    <span className="block text-sm text-slate-300">Model</span>
+                    <input
+                      type="text"
+                      value={geminiModel}
+                      onChange={(e) => setGeminiModel(e.target.value)}
+                      placeholder={DEFAULT_GEMINI_MODEL}
+                      className="w-full rounded-xl bg-slate-900/70 border border-slate-700 px-3 py-2.5 text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500/60 focus:border-sky-500"
+                    />
+                  </label>
+                </div>
+                <p className="text-xs text-slate-500">設定會儲存在本機瀏覽器中，不會上傳到伺服器。</p>
+              </div>
+
+              {analysisError && (
+                <div className="glass rounded-2xl p-4 border-l-4 border-rose-500">
+                  <p className="text-rose-300 font-semibold">分析失敗</p>
+                  <p className="text-slate-200 mt-1">{analysisError}</p>
+                </div>
+              )}
             </div>
             {sessions.length > 0 ? <Analytics sessions={sessions} insights={insights} /> : <div className="text-center py-20 glass rounded-3xl"><p className="text-slate-400 text-lg">目前尚無數據，請先完成一些計時階段！</p></div>}
           </div>
