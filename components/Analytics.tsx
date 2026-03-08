@@ -12,27 +12,43 @@ interface AnalyticsProps {
 }
 
 const Analytics: React.FC<AnalyticsProps> = ({ sessions, insights }) => {
-  const dailyData = React.useMemo(() => {
-    const groups: Record<string, number> = {};
-    sessions.forEach(s => {
-      if (s.type === 'FLOW') {
-        const date = toDate(s.startTime).toLocaleDateString();
-        groups[date] = (groups[date] || 0) + s.duration;
+  const { dailyData, typeData, totalFlowMinutes } = React.useMemo(() => {
+    const flowGroups = new Map<number, { date: string; duration: number }>();
+    let flowTotal = 0;
+    let breakTotal = 0;
+
+    sessions.forEach((session) => {
+      if (session.type === 'FLOW') {
+        flowTotal += session.duration;
+        const dateObj = toDate(session.startTime);
+        const dayKey = new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate()).getTime();
+        const current = flowGroups.get(dayKey);
+        if (current) {
+          current.duration += session.duration;
+        } else {
+          flowGroups.set(dayKey, { date: dateObj.toLocaleDateString(), duration: session.duration });
+        }
+      } else if (session.type === 'BREAK') {
+        breakTotal += session.duration;
       }
     });
-    return Object.entries(groups).map(([date, duration]) => ({
-      date,
-      minutes: Math.round(duration / 60)
-    })).slice(-7);
-  }, [sessions]);
 
-  const typeData = React.useMemo(() => {
-    const flowTotal = sessions.filter(s => s.type === 'FLOW').reduce((acc, s) => acc + s.duration, 0);
-    const breakTotal = sessions.filter(s => s.type === 'BREAK').reduce((acc, s) => acc + s.duration, 0);
-    return [
-      { name: 'Work', value: flowTotal, color: '#38bdf8' },
-      { name: 'Rest', value: breakTotal, color: '#10b981' }
-    ];
+    const nextDailyData = Array.from(flowGroups.entries())
+      .sort(([a], [b]) => a - b)
+      .slice(-7)
+      .map(([, value]) => ({
+        date: value.date,
+        minutes: Math.round(value.duration / 60)
+      }));
+
+    return {
+      dailyData: nextDailyData,
+      typeData: [
+        { name: 'Work', value: flowTotal, color: '#38bdf8' },
+        { name: 'Rest', value: breakTotal, color: '#10b981' }
+      ],
+      totalFlowMinutes: Math.round(flowTotal / 60)
+    };
   }, [sessions]);
 
   if (sessions.length === 0) {
@@ -53,7 +69,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ sessions, insights }) => {
         <div className="glass p-6 rounded-2xl">
           <h4 className="text-sm text-slate-400 mb-1">Total Work</h4>
           <p className="text-3xl font-bold text-emerald-400">
-            {Math.round(sessions.filter(s => s.type === 'FLOW').reduce((acc, s) => acc + s.duration, 0) / 60)}m
+            {totalFlowMinutes}m
           </p>
         </div>
         <div className="glass p-6 rounded-2xl">

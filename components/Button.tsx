@@ -1,9 +1,9 @@
 
-import React from 'react';
+import type { FC, ReactNode } from 'react';
 
 interface ButtonProps {
   onClick: () => void;
-  children: React.ReactNode;
+  children: ReactNode;
   variant?: 'primary' | 'secondary' | 'danger' | 'ghost';
   className?: string;
   disabled?: boolean;
@@ -11,7 +11,7 @@ interface ButtonProps {
   title?: string;
 }
 
-const Button: React.FC<ButtonProps> = ({ 
+const Button: FC<ButtonProps> = ({ 
   onClick, 
   children, 
   variant = 'primary', 

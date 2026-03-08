@@ -1,5 +1,5 @@
 
-import React from 'react';
+import type { FC } from 'react';
 
 interface TimerDisplayProps {
   seconds: number;
@@ -8,7 +8,7 @@ interface TimerDisplayProps {
   isPaused?: boolean;
 }
 
-const TimerDisplay: React.FC<TimerDisplayProps> = ({ seconds, label, mode, isPaused = false }) => {
+const TimerDisplay: FC<TimerDisplayProps> = ({ seconds, label, mode, isPaused = false }) => {
   const formatTime = (totalSeconds: number) => {
     const hrs = Math.floor(totalSeconds / 3600);
     const mins = Math.floor((totalSeconds % 3600) / 60);
